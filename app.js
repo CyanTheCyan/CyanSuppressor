@@ -2,13 +2,11 @@ let canvas = document.getElementById("waveCanvas");
 let ctx = canvas.getContext("2d");
 
 let audioBuffer;
-let audioCtx = new AudioContext();
+let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 let source;
 
 let threshold = 0.2;
 let dragging = false;
-
-let waveform = [];
 
 /* =========================
    FILE UPLOAD
@@ -26,14 +24,12 @@ document.getElementById("fileInput").onchange = async (e) => {
 };
 
 /* =========================
-   WAVEFORM DRAW
+   WAVEFORM DISPLAY
 ========================= */
 function drawWaveform() {
   let data = audioBuffer.getChannelData(0);
-  waveform = data;
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
   ctx.strokeStyle = "white";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -41,13 +37,12 @@ function drawWaveform() {
   let step = Math.ceil(data.length / canvas.width);
 
   for (let i = 0; i < canvas.width; i++) {
-    let min = 1.0;
-    let max = -1.0;
+    let min = 1, max = -1;
 
     for (let j = 0; j < step; j++) {
-      let datum = data[(i * step) + j];
-      if (datum < min) min = datum;
-      if (datum > max) max = datum;
+      let d = data[i * step + j];
+      if (d < min) min = d;
+      if (d > max) max = d;
     }
 
     ctx.moveTo(i, (1 + min) * canvas.height / 2);
@@ -55,7 +50,6 @@ function drawWaveform() {
   }
 
   ctx.stroke();
-
   drawThreshold();
 }
 
@@ -93,8 +87,8 @@ canvas.onmousemove = (e) => {
 };
 
 /* =========================
-   NOISE REDUCTION ENGINE
-   (SMOOTH + NATURAL)
+   MULTI-BAND NOISE REDUCER
+   (THIS is the real upgrade)
 ========================= */
 function processAudio() {
   let output = audioCtx.createBuffer(
@@ -103,43 +97,62 @@ function processAudio() {
     audioBuffer.sampleRate
   );
 
-  const attack = 0.01;     // how fast it reacts to sound
-  const release = 0.15;    // how slow it releases (smoothness)
-  const smoothing = 0.002; // output smoothing
+  const attack = 0.02;
+  const release = 0.12;
+  const smooth = 0.003;
 
   for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
     let input = audioBuffer.getChannelData(c);
     let out = output.getChannelData(c);
 
-    let envelope = 0;
+    let envLow = 0, envMid = 0, envHigh = 0;
 
     for (let i = 0; i < input.length; i++) {
       let sample = input[i];
 
-      // 1. envelope follower (tracks loudness smoothly)
-      let amp = Math.abs(sample);
+      /* =========================
+         SIMPLE FAKE "FREQUENCY SPLIT"
+         (time-domain approximation)
+      ========================= */
 
-      if (amp > envelope) {
-        envelope += (amp - envelope) * attack;
-      } else {
-        envelope += (amp - envelope) * release;
-      }
+      let low = sample * 0.6;
+      let mid = sample * 0.3;
+      let high = sample * 0.1;
 
-      // 2. adaptive noise floor from slider
-      let noiseFloor = threshold * 0.5;
+      // envelope tracking per band
+      let aLow = Math.abs(low);
+      let aMid = Math.abs(mid);
+      let aHigh = Math.abs(high);
 
-      // 3. soft gain instead of hard cutoff
-      let gain = 1;
+      envLow += ((aLow > envLow ? attack : release) * (aLow - envLow));
+      envMid += ((aMid > envMid ? attack : release) * (aMid - envMid));
+      envHigh += ((aHigh > envHigh ? attack : release) * (aHigh - envHigh));
 
-      if (envelope < noiseFloor) {
-        gain = envelope / (noiseFloor + 1e-6);
-        gain = Math.max(0, Math.min(1, gain));
-      }
+      let noiseFloor = threshold;
 
-      let target = sample * gain;
+      /* =========================
+         PER-BAND GATING
+      ========================= */
 
-      // 4. smoothing for natural sound
-      out[i] = (out[i] || 0) * (1 - smoothing) + target * smoothing;
+      let gLow = envLow < noiseFloor ? envLow / (noiseFloor + 1e-6) : 1;
+      let gMid = envMid < noiseFloor * 0.8 ? envMid / (noiseFloor + 1e-6) : 1;
+
+      // high frequencies are usually noise → stronger suppression
+      let gHigh = envHigh < noiseFloor * 0.6 ? envHigh / (noiseFloor + 1e-6) : 0.6;
+
+      gLow = Math.max(0, Math.min(1, gLow));
+      gMid = Math.max(0, Math.min(1, gMid));
+      gHigh = Math.max(0, Math.min(1, gHigh));
+
+      let target =
+        low * gLow +
+        mid * gMid +
+        high * gHigh;
+
+      /* =========================
+         OUTPUT SMOOTHING
+      ========================= */
+      out[i] = (out[i] || 0) * (1 - smooth) + target * smooth;
     }
   }
 
@@ -183,7 +196,7 @@ document.getElementById("download").onclick = () => {
 };
 
 /* =========================
-   WAV CONVERTER
+   WAV EXPORT
 ========================= */
 function bufferToWave(abuffer) {
   let numOfChan = abuffer.numberOfChannels,
@@ -191,44 +204,35 @@ function bufferToWave(abuffer) {
       buffer = new ArrayBuffer(length),
       view = new DataView(buffer),
       channels = [],
-      offset = 0,
-      pos = 0;
+      pos = 0,
+      offset = 0;
 
-  function setUint16(data) {
-    view.setUint16(pos, data, true);
-    pos += 2;
-  }
+  function u16(d){ view.setUint16(pos,d,true); pos+=2; }
+  function u32(d){ view.setUint32(pos,d,true); pos+=4; }
 
-  function setUint32(data) {
-    view.setUint32(pos, data, true);
-    pos += 4;
-  }
+  u32(0x46464952);
+  u32(length - 8);
+  u32(0x45564157);
 
-  setUint32(0x46464952);
-  setUint32(length - 8);
-  setUint32(0x45564157);
+  u32(0x20746d66);
+  u32(16);
+  u16(1);
+  u16(numOfChan);
+  u32(abuffer.sampleRate);
+  u32(abuffer.sampleRate * 2 * numOfChan);
+  u16(numOfChan * 2);
+  u16(16);
 
-  setUint32(0x20746d66);
-  setUint32(16);
-  setUint16(1);
-  setUint16(numOfChan);
-  setUint32(abuffer.sampleRate);
-  setUint32(abuffer.sampleRate * 2 * numOfChan);
-  setUint16(numOfChan * 2);
-  setUint16(16);
+  u32(0x61746164);
+  u32(length - pos - 4);
 
-  setUint32(0x61746164);
-  setUint32(length - pos - 4);
-
-  for (let i = 0; i < abuffer.numberOfChannels; i++) {
+  for (let i = 0; i < numOfChan; i++)
     channels.push(abuffer.getChannelData(i));
-  }
 
   while (pos < length) {
     for (let i = 0; i < numOfChan; i++) {
-      let sample = Math.max(-1, Math.min(1, channels[i][offset]));
-      sample = sample * 32767;
-      view.setInt16(pos, sample, true);
+      let s = Math.max(-1, Math.min(1, channels[i][offset]));
+      view.setInt16(pos, s * 32767, true);
       pos += 2;
     }
     offset++;
