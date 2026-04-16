@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Cyan's Noise Suppressor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Cyan's Noise Suppressor</h1>
+
+<input type="file" id="fileInput" accept="audio/*">
+<p id="filename">(file name)</p>
+
+<canvas id="waveCanvas" width="800" height="200"></canvas>
+
+<div class="controls">
+  <button id="play">▶</button>
+  <button id="stop">■</button>
+  <button id="download">💾</button>
+</div>
+
+<p>Drag the cyan line up/down to adjust suppression</p>
+
+<script src="app.js"></script>
+</body>
+</html>
