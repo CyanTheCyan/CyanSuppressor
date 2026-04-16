@@ -10,7 +10,9 @@ let dragging = false;
 
 let waveform = [];
 
-// Upload file
+/* =========================
+   FILE UPLOAD
+========================= */
 document.getElementById("fileInput").onchange = async (e) => {
   let file = e.target.files[0];
   if (!file) return;
@@ -23,7 +25,9 @@ document.getElementById("fileInput").onchange = async (e) => {
   drawWaveform();
 };
 
-// Draw waveform
+/* =========================
+   WAVEFORM DRAW
+========================= */
 function drawWaveform() {
   let data = audioBuffer.getChannelData(0);
   waveform = data;
@@ -31,6 +35,7 @@ function drawWaveform() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   ctx.strokeStyle = "white";
+  ctx.lineWidth = 1;
   ctx.beginPath();
 
   let step = Math.ceil(data.length / canvas.width);
@@ -45,8 +50,8 @@ function drawWaveform() {
       if (datum > max) max = datum;
     }
 
-    ctx.moveTo(i, (1 + min) * 100);
-    ctx.lineTo(i, (1 + max) * 100);
+    ctx.moveTo(i, (1 + min) * canvas.height / 2);
+    ctx.lineTo(i, (1 + max) * canvas.height / 2);
   }
 
   ctx.stroke();
@@ -54,7 +59,9 @@ function drawWaveform() {
   drawThreshold();
 }
 
-// Draw suppression line
+/* =========================
+   THRESHOLD LINE
+========================= */
 function drawThreshold() {
   let y = canvas.height * (1 - threshold);
 
@@ -67,7 +74,9 @@ function drawThreshold() {
   ctx.stroke();
 }
 
-// Dragging
+/* =========================
+   DRAG THRESHOLD
+========================= */
 canvas.onmousedown = () => dragging = true;
 canvas.onmouseup = () => dragging = false;
 
@@ -83,7 +92,10 @@ canvas.onmousemove = (e) => {
   drawWaveform();
 };
 
-// Process audio
+/* =========================
+   NOISE REDUCTION ENGINE
+   (SMOOTH + NATURAL)
+========================= */
 function processAudio() {
   let output = audioCtx.createBuffer(
     audioBuffer.numberOfChannels,
@@ -91,27 +103,52 @@ function processAudio() {
     audioBuffer.sampleRate
   );
 
+  const attack = 0.01;     // how fast it reacts to sound
+  const release = 0.15;    // how slow it releases (smoothness)
+  const smoothing = 0.002; // output smoothing
+
   for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
     let input = audioBuffer.getChannelData(c);
     let out = output.getChannelData(c);
 
+    let envelope = 0;
+
     for (let i = 0; i < input.length; i++) {
       let sample = input[i];
 
-      // Suppression based on threshold line
-      if (Math.abs(sample) < threshold) sample = 0;
+      // 1. envelope follower (tracks loudness smoothly)
+      let amp = Math.abs(sample);
 
-      // Smooth compression
-      sample = Math.tanh(sample * 2);
+      if (amp > envelope) {
+        envelope += (amp - envelope) * attack;
+      } else {
+        envelope += (amp - envelope) * release;
+      }
 
-      out[i] = sample;
+      // 2. adaptive noise floor from slider
+      let noiseFloor = threshold * 0.5;
+
+      // 3. soft gain instead of hard cutoff
+      let gain = 1;
+
+      if (envelope < noiseFloor) {
+        gain = envelope / (noiseFloor + 1e-6);
+        gain = Math.max(0, Math.min(1, gain));
+      }
+
+      let target = sample * gain;
+
+      // 4. smoothing for natural sound
+      out[i] = (out[i] || 0) * (1 - smoothing) + target * smoothing;
     }
   }
 
   return output;
 }
 
-// Play
+/* =========================
+   PLAY
+========================= */
 document.getElementById("play").onclick = () => {
   if (!audioBuffer) return;
 
@@ -123,12 +160,16 @@ document.getElementById("play").onclick = () => {
   source.start();
 };
 
-// Stop
+/* =========================
+   STOP
+========================= */
 document.getElementById("stop").onclick = () => {
   if (source) source.stop();
 };
 
-// Download
+/* =========================
+   DOWNLOAD WAV
+========================= */
 document.getElementById("download").onclick = () => {
   let processed = processAudio();
 
@@ -141,7 +182,9 @@ document.getElementById("download").onclick = () => {
   a.click();
 };
 
-// Convert to WAV
+/* =========================
+   WAV CONVERTER
+========================= */
 function bufferToWave(abuffer) {
   let numOfChan = abuffer.numberOfChannels,
       length = abuffer.length * numOfChan * 2 + 44,
@@ -177,8 +220,9 @@ function bufferToWave(abuffer) {
   setUint32(0x61746164);
   setUint32(length - pos - 4);
 
-  for (let i = 0; i < abuffer.numberOfChannels; i++)
+  for (let i = 0; i < abuffer.numberOfChannels; i++) {
     channels.push(abuffer.getChannelData(i));
+  }
 
   while (pos < length) {
     for (let i = 0; i < numOfChan; i++) {
